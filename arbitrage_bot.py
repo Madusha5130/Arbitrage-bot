@@ -1,76 +1,60 @@
 import requests
 import time
+import telegram
 
-# CoinMarketCap API key
 CMC_API_KEY = "7cd882b6-efa9-44ef-8715-22faca85eba3"
-
-# Telegram bot settings
 TELEGRAM_BOT_TOKEN = "7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM"
 TELEGRAM_CHAT_ID = "5556378872"
 
-# Headers for CMC API
-headers = {
-    'Accepts': 'application/json',
-    'X-CMC_PRO_API_KEY': CMC_API_KEY,
-}
+EXCHANGES = ["binance", "bitget", "bybit", "gate", "coinbase", "kucoin", "okx", "mexc"]
 
-# Supported exchanges
-exchanges = ['binance', 'bitget', 'bybit', 'gateio', 'coinbase', 'kucoin', 'okx', 'mexc']
-
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print("Telegram error:", e)
-
-def get_top_80_symbols():
+def get_top_symbols():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-    params = {"start": "1", "limit": "80", "convert": "USD"}
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
-        return [coin["symbol"] for coin in data["data"]]
-    except Exception as e:
-        print("CMC Error:", e)
-        return []
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"start": "1", "limit": "80", "convert": "USDT"}
+    response = requests.get(url, headers=headers, params=params)
+    data = response.json()["data"]
+    return [crypto["symbol"] for crypto in data]
 
-def get_price_from_exchange(symbol, exchange):
-    try:
-        url = f"https://api.coinmarketcap.com/data-api/v3/tools/price-conversion?amount=1&convert=USD&symbol={symbol}&e={exchange}"
-        res = requests.get(url)
-        data = res.json()
-        return float(data["data"]["quote"]["price"])
-    except:
-        return None
+def get_prices(symbol):
+    exchange_prices = {}
+    for ex in EXCHANGES:
+        try:
+            url = f"https://api.coingecko.com/api/v3/exchanges/{ex}/tickers?coin_ids={symbol.lower()}"
+            response = requests.get(url)
+            data = response.json()
+            for item in data.get("tickers", []):
+                if item["target"] == "USDT":
+                    exchange_prices[ex] = item["last"]
+                    break
+        except:
+            continue
+    return exchange_prices
 
-def find_arbitrage_opportunities():
-    symbols = get_top_80_symbols()
+def check_arbitrage():
+    symbols = get_top_symbols()
+    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+    opportunities_found = False
+
     for symbol in symbols:
-        prices = {}
-        for ex in exchanges:
-            price = get_price_from_exchange(symbol, ex)
-            if price:
-                prices[ex] = price
+        prices = get_prices(symbol)
+        if len(prices) < 2:
+            continue
+        min_ex, min_price = min(prices.items(), key=lambda x: x[1])
+        max_ex, max_price = max(prices.items(), key=lambda x: x[1])
+        diff_percent = ((max_price - min_price) / min_price) * 100
 
-        if len(prices) >= 2:
-            min_ex = min(prices, key=prices.get)
-            max_ex = max(prices, key=prices.get)
-            min_price = prices[min_ex]
-            max_price = prices[max_ex]
-            diff_percent = ((max_price - min_price) / min_price) * 100
+        if diff_percent >= 1.5:
+            opportunities_found = True
+            message = (f"Arbitrage Opportunity Found for {symbol}:\n"
+                       f"Buy from {min_ex} @ {min_price} USD\n"
+                       f"Sell at {max_ex} @ {max_price} USD\n"
+                       f"Difference: {diff_percent:.2f}%")
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
-            if diff_percent >= 1.5:
-                msg = f"*Arbitrage Alert!*\n\n*Token:* {symbol}\nBuy from *{min_ex.upper()}* at ${min_price:.4f}\nSell on *{max_ex.upper()}* at ${max_price:.4f}\n*Difference:* {diff_percent:.2f}%"
-                print(msg)
-                send_telegram_message(msg)
+    if not opportunities_found:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="No arbitrage opportunity found in this scan.")
 
-if __name__ == "__main__":
-    while True:
-        find_arbitrage_opportunities()
-        time.sleep(60)  # scan every 1 minute
+while True:
+    check_arbitrage()
+    time.sleep(60)
