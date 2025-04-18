@@ -50,8 +50,11 @@ def get_price_from_exchange(symbol, exchange):
         url = f"https://api.coinmarketcap.com/data-api/v3/tools/price-conversion?amount=1&convert=USD&symbol={symbol}&e={exchange}"
         res = requests.get(url)
         data = res.json()
-        return float(data["data"]["quote"]["price"])
-    except:
+        price = float(data["data"]["quote"]["price"])
+        print(f"[DEBUG] {symbol} on {exchange.upper()} = ${price}")
+        return price
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch {symbol} from {exchange.upper()}: {e}")
         return None
 
 def find_arbitrage_opportunities():
