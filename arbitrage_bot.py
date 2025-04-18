@@ -22,8 +22,15 @@ exchanges = ['binance', 'bitget', 'bybit', 'gateio', 'coinbase', 'kucoin', 'okx'
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
+        res = requests.post(url, json=payload)
+        print("Telegram response:", res.json())  # Debug msg
     except Exception as e:
         print("Telegram error:", e)
 
