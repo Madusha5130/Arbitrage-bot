@@ -47,14 +47,22 @@ def get_top_80_symbols():
 
 def get_price_from_exchange(symbol, exchange):
     try:
-        url = f"https://api.coinmarketcap.com/data-api/v3/tools/price-conversion?amount=1&convert=USD&symbol={symbol}&e={exchange}"
-        res = requests.get(url)
-        data = res.json()
-        price = float(data["data"]["quote"]["price"])
-        print(f"[DEBUG] {symbol} on {exchange.upper()} = ${price}")
+        url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+        headers = {
+            "Accepts": "application/json",
+            "X-CMC_PRO_API_KEY": "7cd882b6-efa9-44ef-8715-22faca85eba3",
+        }
+        params = {
+            "symbol": symbol,
+            "convert": "USD"
+        }
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        price = float(data["data"][symbol]["quote"]["USD"]["price"])
+        print(f"[DEBUG] {symbol} = ${price}")
         return price
     except Exception as e:
-        print(f"[ERROR] Failed to fetch {symbol} from {exchange.upper()}: {e}")
+        print(f"[ERROR] Failed to fetch {symbol}: {e}")
         return None
 
 def find_arbitrage_opportunities():
