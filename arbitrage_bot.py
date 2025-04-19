@@ -1,119 +1,113 @@
 import asyncio
 import aiohttp
-import telegram
-from datetime import datetime
 import time
+import ssl
+import certifi
+import traceback
 
+from aiohttp import ClientConnectorError
+
+# --- CONFIGURATION --- #
 COINMARKETCAP_API_KEY = "7cd882b6-efa9-44ef-8715-22faca85eba3"
 TELEGRAM_BOT_TOKEN = "7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM"
 TELEGRAM_CHAT_ID = "5556378872"
-EXCHANGES = ["BINANCE", "BITGET", "BYBIT", "GATEIO", "COINBASE", "KUCOIN", "OKX", "MEXC"]
+ARBITRAGE_THRESHOLD = 1.5
 
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+EXCHANGES = {
+    "BINANCE": lambda symbol: f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT",
+    "BITGET": lambda symbol: f"https://api.bitget.com/api/spot/v1/market/ticker?symbol={symbol}USDT",
+    "BYBIT": lambda symbol: f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}USDT",
+    "GATEIO": lambda symbol: f"https://api.gate.io/api/v4/spot/tickers?currency_pair={symbol}_USDT",
+    "COINBASE": lambda symbol: f"https://api.coinbase.com/v2/prices/{symbol}-USD/spot",
+    "KUCOIN": lambda symbol: f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={symbol}-USDT",
+    "OKX": lambda symbol: f"https://www.okx.com/api/v5/market/ticker?instId={symbol}-USDT",
+    "MEXC": lambda symbol: f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}USDT",
+}
 
-async def fetch_top_coins():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-    headers = {"X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY}
-    params = {"start": "1", "limit": "80", "convert": "USDT"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as response:
-            data = await response.json()
-            return [coin["symbol"] for coin in data["data"] if "symbol" in coin]
+ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-async def fetch_price(session, exchange, symbol):
+async def fetch_price(session, url, exchange, symbol):
     try:
-        if exchange == "BINANCE":
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data.get("price", 0)), exchange
-
-        elif exchange == "BITGET":
-            url = f"https://api.bitget.com/api/spot/v1/market/ticker?symbol={symbol}USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data["data"]["close"] if data.get("data") else 0), exchange
-
-        elif exchange == "BYBIT":
-            url = f"https://api.bybit.com/v2/public/tickers?symbol={symbol}USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data["result"][0]["last_price"] if data.get("result") else 0), exchange
-
-        elif exchange == "GATEIO":
-            url = f"https://api.gate.io/api2/1/ticker/{symbol.lower()}_usdt"
-            async with session.get(url, ssl=False) as response:
-                data = await response.json()
-                return float(data.get("last", 0)), exchange
-
-        elif exchange == "COINBASE":
-            url = f"https://api.coinbase.com/v2/prices/{symbol}-USDT/spot"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data["data"]["amount"] if "data" in data else 0), exchange
-
-        elif exchange == "KUCOIN":
-            url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={symbol}-USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data["data"]["price"] if data.get("data") else 0), exchange
-
-        elif exchange == "OKX":
-            url = f"https://www.okx.com/api/v5/market/ticker?instId={symbol}-USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                tick = data["data"][0] if data.get("data") else {}
-                return float(tick.get("last", 0)), exchange
-
-        elif exchange == "MEXC":
-            url = f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}USDT"
-            async with session.get(url) as response:
-                data = await response.json()
-                return float(data.get("price", 0)), exchange
-
+        async with session.get(url, ssl=ssl_context, timeout=10) as response:
+            data = await response.json()
+            if exchange == "BINANCE": return float(data["price"])
+            elif exchange == "BITGET": return float(data['data']['close'])
+            elif exchange == "BYBIT": return float(data['result']['list'][0]['lastPrice'])
+            elif exchange == "GATEIO": return float(data[0]['last'])
+            elif exchange == "COINBASE": return float(data['data']['amount'])
+            elif exchange == "KUCOIN": return float(data['data']['price'])
+            elif exchange == "OKX": return float(data['data'][0]['last'])
+            elif exchange == "MEXC": return float(data['price'])
     except Exception as e:
         print(f"[ERROR] Failed to fetch {symbol} from {exchange}: {e}")
-    return 0.0, exchange
+    return None
+
+async def fetch_top_coins():
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit=80"
+    headers = {"X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, ssl=ssl_context) as response:
+            data = await response.json()
+            return [(coin['symbol'], coin['cmc_rank']) for coin in data['data']]
+
+async def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            await session.post(url, data=payload)
+        except Exception as e:
+            print(f"[ERROR] Failed to send Telegram message: {e}")
 
 async def check_arbitrage():
+    coins = await fetch_top_coins()
     async with aiohttp.ClientSession() as session:
-        coins = await fetch_top_coins()
-        found_opportunity = False
-
-        for symbol in coins:
-            tasks = [fetch_price(session, ex, symbol) for ex in EXCHANGES]
+        for symbol, rank in coins:
+            prices = {}
+            tasks = []
+            for exchange, url_fn in EXCHANGES.items():
+                url = url_fn(symbol)
+                tasks.append(fetch_price(session, url, exchange, symbol))
             results = await asyncio.gather(*tasks)
 
-            valid_prices = [(price, ex) for price, ex in results if price > 0]
-            if len(valid_prices) < 2:
+            for idx, (exchange, _) in enumerate(EXCHANGES.items()):
+                if results[idx] is not None:
+                    prices[exchange] = results[idx]
+
+            if len(prices) < 2:
                 continue
 
-            min_price, min_ex = min(valid_prices, key=lambda x: x[0])
-            max_price, max_ex = max(valid_prices, key=lambda x: x[0])
+            min_exchange = min(prices, key=prices.get)
+            max_exchange = max(prices, key=prices.get)
+            min_price = prices[min_exchange]
+            max_price = prices[max_exchange]
 
             if min_price == 0:
                 continue
 
             diff_percent = ((max_price - min_price) / min_price) * 100
-            if diff_percent >= 1.5:
-                message = (f"**Arbitrage Opportunity Found:**\n"
-                           f"- {symbol}: {min_price:.2f} ({min_ex}) -> {max_price:.2f} ({max_ex}) | Diff: {diff_percent:.2f}%")
-                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
+            if diff_percent >= ARBITRAGE_THRESHOLD:
+                message = (
+                    f"**Arbitrage Opportunity Found:**\n"
+                    f"- *{symbol}* (Rank #{rank})\n"
+                    f"- {min_price:.4f} ({min_exchange}) -> {max_price:.4f} ({max_exchange})\n"
+                    f"- Difference: {diff_percent:.2f}%"
+                )
                 print(message)
-                found_opportunity = True
-
-        if not found_opportunity:
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="No arbitrage opportunities found this round.")
-            print("[INFO] No arbitrage found in this round.")
+                await send_telegram_message(message)
 
 async def main():
     while True:
-        print(f"\n[SCAN STARTED] {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        print(f"[SCAN STARTED] {time.strftime('%Y-%m-%d %H:%M:%S')}")
         try:
             await check_arbitrage()
-        except Exception as e:
-            print(f"[FATAL ERROR] {e}")
+        except Exception:
+            traceback.print_exc()
         await asyncio.sleep(60)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
