@@ -12,7 +12,7 @@ EXCHANGES = [
     'kucoin', 'okx', 'mexc'
 ]
 
-MIN_ARBITRAGE = 1.0  # Only minimum limit
+MIN_ARBITRAGE = 1.0  # Only notify if greater than 1%
 COIN_LIMIT = 150     # Top 150 coins
 
 async def fetch_top_coins(session: ClientSession):
@@ -32,7 +32,7 @@ async def fetch_price(session: ClientSession, exchange: str, symbol: str):
                 if m['exchange']['id'] == exchange and m.get('price')
             ]
             return prices[0] if prices else None
-    except Exception as e:
+    except Exception:
         return None
 
 async def fetch_prices_all_exchanges(session: ClientSession, symbol: str):
@@ -43,20 +43,22 @@ async def fetch_prices_all_exchanges(session: ClientSession, symbol: str):
 async def check_arbitrage(session: ClientSession, bot: Bot, symbol: str, rank: int):
     prices = await fetch_prices_all_exchanges(session, symbol)
     if len(prices) < 2:
+        print(f"{symbol}: Not enough data")
         return
 
     lowest = min(prices)
     highest = max(prices)
     if lowest == 0:
+        print(f"{symbol}: Invalid lowest price")
         return
 
     percent_diff = ((highest - lowest) / lowest) * 100
-    print(f"{symbol}: {percent_diff:.2f}% arbitrage difference")  # DEBUG PRINT
+    print(f"{symbol}: {percent_diff:.2f}% price difference")
 
     if percent_diff >= MIN_ARBITRAGE:
         message = (
             f"Arbitrage Opportunity Detected!\n"
-            f"Symbol: {symbol}\n"
+            f"Symbol: {symbol.upper()}\n"
             f"Market Cap Rank: {rank}\n"
             f"Lowest Price: ${lowest:.4f}\n"
             f"Highest Price: ${highest:.4f}\n"
@@ -68,15 +70,21 @@ async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     async with aiohttp.ClientSession() as session:
         while True:
-            print("Fetching top coins...")
-            coins = await fetch_top_coins(session)
-            print("Checking arbitrage opportunities...")
+            print("Fetching top coins...\n")
+            try:
+                coins = await fetch_top_coins(session)
+            except Exception as e:
+                print(f"Error fetching top coins: {e}")
+                await asyncio.sleep(60)
+                continue
+
+            print("Checking arbitrage opportunities...\n")
             tasks = [
                 check_arbitrage(session, bot, symbol.lower(), rank)
                 for symbol, rank in coins
             ]
             await asyncio.gather(*tasks)
-            print("Waiting 60 seconds...\n")
+            print("\nWaiting 60 seconds...\n")
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
