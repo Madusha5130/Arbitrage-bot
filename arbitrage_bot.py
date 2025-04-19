@@ -2,45 +2,41 @@ import asyncio
 import aiohttp
 from aiohttp import ClientSession
 from telegram import Bot
-import time
 
-# SETTINGS
-CMC_API_KEY = "7cd882b6-efa9-44ef-8715-22faca85eba3"
-TELEGRAM_TOKEN = "7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM"
-TELEGRAM_CHAT_ID = "5556378872"
-COINS_LIMIT = 150
-MIN_ARBITRAGE = 1.5
-MAX_ARBITRAGE = 100
-SCAN_INTERVAL = 60
+COINMARKETCAP_API_KEY = '7cd882b6-efa9-44ef-8715-22faca85eba3'
+TELEGRAM_BOT_TOKEN = '7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM'
+TELEGRAM_CHAT_ID = '5556378872'
 
 EXCHANGES = [
-    "binance", "bitget", "bybit", "gate", "coinbase", "kucoin", "okx", "mexc"
+    'binance', 'bitget', 'bybit', 'gate', 'coinbase',
+    'kucoin', 'okx', 'mexc'
 ]
 
-HEADERS = {
-    "Accepts": "application/json",
-    "X-CMC_PRO_API_KEY": CMC_API_KEY
-}
+MIN_ARBITRAGE = 1.0  # Only minimum limit
+COIN_LIMIT = 150     # Top 150 coins
 
-async def get_top_coins(session: ClientSession):
-    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit={COINS_LIMIT}"
-    async with session.get(url, headers=HEADERS) as response:
+async def fetch_top_coins(session: ClientSession):
+    url = f'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit={COIN_LIMIT}&convert=USDT'
+    headers = {'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY}
+    async with session.get(url, headers=headers) as response:
         data = await response.json()
-        return {coin["symbol"]: coin["cmc_rank"] for coin in data["data"]}
+        return [(coin['symbol'], coin['cmc_rank']) for coin in data['data']]
 
-async def fetch_price(session: ClientSession, symbol: str, exchange: str):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd&include_market_cap=false&include_24hr_vol=false&include_24hr_change=false&include_last_updated_at=false"
+async def fetch_price(session: ClientSession, exchange: str, symbol: str):
+    url = f'https://api.cryptorank.io/v0/coins/{symbol}/markets'
     try:
         async with session.get(url) as response:
-            result = await response.json()
-            return result.get(symbol, {}).get("usd", None)
-    except:
+            data = await response.json()
+            prices = [
+                float(m['price']) for m in data.get('data', [])
+                if m['exchange']['id'] == exchange and m.get('price')
+            ]
+            return prices[0] if prices else None
+    except Exception as e:
         return None
 
 async def fetch_prices_all_exchanges(session: ClientSession, symbol: str):
-    tasks = []
-    for exchange in EXCHANGES:
-        tasks.append(fetch_price(session, symbol.lower(), exchange))
+    tasks = [fetch_price(session, exch, symbol) for exch in EXCHANGES]
     prices = await asyncio.gather(*tasks)
     return [p for p in prices if p is not None]
 
@@ -55,8 +51,9 @@ async def check_arbitrage(session: ClientSession, bot: Bot, symbol: str, rank: i
         return
 
     percent_diff = ((highest - lowest) / lowest) * 100
+    print(f"{symbol}: {percent_diff:.2f}% arbitrage difference")  # DEBUG PRINT
 
-    if MIN_ARBITRAGE <= percent_diff <= MAX_ARBITRAGE:
+    if percent_diff >= MIN_ARBITRAGE:
         message = (
             f"Arbitrage Opportunity Detected!\n"
             f"Symbol: {symbol}\n"
@@ -67,27 +64,20 @@ async def check_arbitrage(session: ClientSession, bot: Bot, symbol: str, rank: i
         )
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
-async def main_loop():
-    bot = Bot(token=TELEGRAM_TOKEN)
-
+async def main():
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
     async with aiohttp.ClientSession() as session:
         while True:
-            try:
-                print("Fetching top coins...")
-                top_coins = await get_top_coins(session)
+            print("Fetching top coins...")
+            coins = await fetch_top_coins(session)
+            print("Checking arbitrage opportunities...")
+            tasks = [
+                check_arbitrage(session, bot, symbol.lower(), rank)
+                for symbol, rank in coins
+            ]
+            await asyncio.gather(*tasks)
+            print("Waiting 60 seconds...\n")
+            await asyncio.sleep(60)
 
-                print("Checking arbitrage opportunities...")
-                tasks = []
-                for symbol, rank in top_coins.items():
-                    tasks.append(check_arbitrage(session, bot, symbol, rank))
-
-                await asyncio.gather(*tasks)
-
-            except Exception as e:
-                print(f"Error in main loop: {e}")
-
-            print(f"Waiting {SCAN_INTERVAL} seconds...\n")
-            await asyncio.sleep(SCAN_INTERVAL)
-
-if __name__ == "__main__":
-    asyncio.run(main_loop())
+if __name__ == '__main__':
+    asyncio.run(main())
