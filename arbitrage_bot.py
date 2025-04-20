@@ -7,81 +7,72 @@ COINMARKETCAP_API_KEY = '7cd882b6-efa9-44ef-8715-22faca85eba3'
 TELEGRAM_BOT_TOKEN = '7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM'
 TELEGRAM_CHAT_ID = '5556378872'
 
-EXCHANGES = ['binance', 'bitget', 'bybit', 'gate', 'coinbase', 'kucoin', 'okx', 'mexc']
-MIN_ARBITRAGE = 1.0
-COIN_LIMIT = 200
+EXCHANGES = [
+    'binance', 'bitget', 'bybit', 'gate', 'coinbase',
+    'kucoin', 'okx', 'mexc'
+]
 
-# Optional symbol mapping if exchange-specific symbol names differ
-EXCHANGE_SYMBOL_MAP = {
-    'BTC': 'BTC',
-    'ETH': 'ETH',
-    'XRP': 'XRP',
-    'DOGE': 'DOGE',
-    'SOL': 'SOL',
-    'MATIC': 'MATIC',
-    'TRX': 'TRX',
-    'ADA': 'ADA',
-    'LTC': 'LTC',
-    'LINK': 'LINK',
-    # Add more if needed
-}
+MIN_ARBITRAGE = 1.0  # Only minimum limit
+COIN_LIMIT = 200     # Top 200 coins
 
 async def fetch_top_coins(session: ClientSession):
     url = f'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit={COIN_LIMIT}&convert=USDT'
     headers = {'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY}
     async with session.get(url, headers=headers) as response:
         data = await response.json()
-        return [(coin['symbol'], coin['cmc_rank']) for coin in data['data']]
+        return [(coin['symbol'].lower(), coin['cmc_rank']) for coin in data['data']]
 
 async def fetch_price(session: ClientSession, exchange: str, symbol: str):
     url = f'https://api.cryptorank.io/v0/coins/{symbol}/markets'
     try:
-        async with session.get(url) as response:
+        async with session.get(url, timeout=10) as response:
             data = await response.json()
-            prices = [
-                (float(m['price']), m['exchange']['name'])
-                for m in data.get('data', [])
-                if m['exchange']['id'] == exchange and m.get('price')
-            ]
-            return prices[0] if prices else None
-    except Exception as e:
+            for market in data.get('data', []):
+                exch_id = market.get('exchange', {}).get('id')
+                price = market.get('price')
+                if exch_id == exchange and price:
+                    return float(price)
+    except:
         return None
 
 async def fetch_prices_all_exchanges(session: ClientSession, symbol: str):
     tasks = [fetch_price(session, exch, symbol) for exch in EXCHANGES]
-    results = await asyncio.gather(*tasks)
-
-    valid_prices = [r for r in results if r is not None]
-    if not valid_prices:
-        print(f"{symbol}: Not enough data")
-    return valid_prices
+    prices = await asyncio.gather(*tasks)
+    return {
+        exch: price for exch, price in zip(EXCHANGES, prices) if price is not None
+    }
 
 async def check_arbitrage(session: ClientSession, bot: Bot, symbol: str, rank: int):
-    actual_symbol = EXCHANGE_SYMBOL_MAP.get(symbol.upper(), symbol.upper())
-    prices_data = await fetch_prices_all_exchanges(session, actual_symbol)
-    if len(prices_data) < 2:
+    prices = await fetch_prices_all_exchanges(session, symbol)
+    if len(prices) < 2:
+        print(f"{symbol.upper()}: Not enough data")
         return
 
-    prices = [p[0] for p in prices_data]
-    lowest_price, lowest_exchange = min(prices_data, key=lambda x: x[0])
-    highest_price, highest_exchange = max(prices_data, key=lambda x: x[0])
+    lowest_exch = min(prices, key=prices.get)
+    highest_exch = max(prices, key=prices.get)
+    lowest = prices[lowest_exch]
+    highest = prices[highest_exch]
 
-    percent_diff = ((highest_price - lowest_price) / lowest_price) * 100
-    print(f"{symbol}: {percent_diff:.2f}% arbitrage difference")
+    if lowest == 0:
+        print(f"{symbol.upper()}: Invalid lowest price")
+        return
+
+    percent_diff = ((highest - lowest) / lowest) * 100
+    print(f"{symbol.upper()}: {percent_diff:.2f}% difference")
 
     if percent_diff >= MIN_ARBITRAGE:
         message = (
             f"Arbitrage Opportunity Detected!\n"
-            f"Symbol: {symbol}\n"
+            f"Symbol: {symbol.upper()}\n"
             f"Market Cap Rank: {rank}\n"
-            f"Lowest Price: ${lowest_price:.4f} @ {lowest_exchange}\n"
-            f"Highest Price: ${highest_price:.4f} @ {highest_exchange}\n"
+            f"Lowest Price: ${lowest:.4f} @ {lowest_exch.upper()}\n"
+            f"Highest Price: ${highest:.4f} @ {highest_exch.upper()}\n"
             f"Difference: {percent_diff:.2f}%"
         )
         try:
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         except Exception as e:
-            print(f"Telegram send error: {e}")
+            print(f"Telegram Error: {e}")
 
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -89,7 +80,7 @@ async def main():
         while True:
             print("Fetching top coins...")
             coins = await fetch_top_coins(session)
-            print("Checking arbitrage opportunities...\n")
+            print("Checking arbitrage opportunities...")
             tasks = [
                 check_arbitrage(session, bot, symbol, rank)
                 for symbol, rank in coins
