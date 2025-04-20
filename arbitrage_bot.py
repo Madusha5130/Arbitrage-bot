@@ -2,97 +2,82 @@ import asyncio
 import aiohttp
 from telegram import Bot
 
+COINMARKETCAP_API_KEY = '7cd882b6-efa9-44ef-8715-22faca85eba3'
 TELEGRAM_BOT_TOKEN = '7769765331:AAEw12H4-98xYfP_2tBGQQPe10prkXF-lGM'
 TELEGRAM_CHAT_ID = '5556378872'
 
-COIN_LIMIT = 150
-MIN_ARBITRAGE = 1.5  # % difference threshold
-COINGECKO_BASE_URL = 'https://api.coingecko.com/api/v3'
-
-semaphore = asyncio.Semaphore(1)  # Telegram message lock
+EXCHANGES = ['binance', 'bitget', 'bybit', 'gate', 'coinbase', 'kucoin', 'okx', 'mexc']
+MIN_ARBITRAGE = 1.0
+COIN_LIMIT = 200
 
 async def fetch_top_coins(session):
-    url = f'{COINGECKO_BASE_URL}/coins/markets'
-    params = {
-        'vs_currency': 'usd',
-        'order': 'market_cap_desc',
-        'per_page': COIN_LIMIT,
-        'page': 1
-    }
-    async with session.get(url, params=params) as resp:
-        return await resp.json()
+    url = f'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit={COIN_LIMIT}&convert=USDT'
+    headers = {'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY}
+    async with session.get(url, headers=headers) as response:
+        data = await response.json()
+        return [(coin['id'], coin['symbol'], coin['cmc_rank']) for coin in data['data']]
 
-async def fetch_tickers(session, coin_id):
-    url = f'{COINGECKO_BASE_URL}/coins/{coin_id}/tickers'
-    async with session.get(url) as resp:
-        return await resp.json()
-
-async def send_telegram(bot, msg):
-    async with semaphore:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-        await asyncio.sleep(1)  # Prevent spamming Telegram
-
-async def check_arbitrage(session, bot, coin):
-    symbol = coin['symbol']
-    coin_id = coin['id']
-    rank = coin['market_cap_rank']
-
+async def fetch_cmc_market_data(session, coin_id):
+    url = f'https://pro-api.coinmarketcap.com/v1/cryptocurrency/market-pairs/latest?id={coin_id}'
+    headers = {'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY}
     try:
-        data = await fetch_tickers(session, coin_id)
-        tickers = data.get('tickers', [])
-        prices = []
+        async with session.get(url, headers=headers) as response:
+            data = await response.json()
+            return data['data']['market_pairs']
+    except Exception:
+        return []
 
-        for t in tickers:
-            price = t.get('converted_last', {}).get('usd')
-            exchange = t.get('market', {}).get('name')
-            if price and exchange:
-                prices.append((price, exchange))
+async def check_arbitrage(session, bot, coin_id, symbol, rank):
+    market_data = await fetch_cmc_market_data(session, coin_id)
 
-        if len(prices) < 2:
-            print(f"{symbol}: Not enough data")
-            return
+    prices = {}
+    for market in market_data:
+        exchange = market['exchange_name'].lower()
+        if exchange in EXCHANGES and market['quote_currency_symbol'] == 'USDT':
+            price = market.get('quote', {}).get('price')
+            if price:
+                prices[exchange] = float(price)
 
-        prices.sort()
-        lowest_price, low_exchange = prices[0]
-        highest_price, high_exchange = prices[-1]
+    if len(prices) < 2:
+        print(f"{symbol}: Not enough data")
+        return
 
-        if lowest_price == 0:
-            print(f"{symbol}: Invalid lowest price")
-            return
+    lowest_exchange = min(prices, key=prices.get)
+    highest_exchange = max(prices, key=prices.get)
+    lowest = prices[lowest_exchange]
+    highest = prices[highest_exchange]
 
-        diff = ((highest_price - lowest_price) / lowest_price) * 100
-        print(f"{symbol.upper()}: {diff:.2f}% difference")
+    percent_diff = ((highest - lowest) / lowest) * 100
+    print(f"{symbol}: {percent_diff:.2f}% arbitrage difference")
 
-        if diff >= MIN_ARBITRAGE:
-            msg = (
-                f"Arbitrage Opportunity Detected!\n"
-                f"Symbol: {symbol.upper()}\n"
-                f"Market Cap Rank: {rank}\n"
-                f"Lowest Price: ${lowest_price:.4f} @ {low_exchange}\n"
-                f"Highest Price: ${highest_price:.4f} @ {high_exchange}\n"
-                f"Difference: {diff:.2f}%"
-            )
-            await send_telegram(bot, msg)
-
-    except Exception as e:
-        print(f"Error checking {symbol}: {e}")
+    if percent_diff >= MIN_ARBITRAGE:
+        message = (
+            f"Arbitrage Opportunity Detected!\n"
+            f"Symbol: {symbol}\n"
+            f"Market Cap Rank: {rank}\n"
+            f"Lowest Price: ${lowest:.4f} @ {lowest_exchange.capitalize()}\n"
+            f"Highest Price: ${highest:.4f} @ {highest_exchange.capitalize()}\n"
+            f"Difference: {percent_diff:.2f}%"
+        )
+        try:
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        except Exception as e:
+            print(f"Telegram Error: {e}")
 
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     async with aiohttp.ClientSession() as session:
         while True:
-            print("\nFetching top coins...")
+            print("Fetching top coins...")
             coins = await fetch_top_coins(session)
-            print(f"Checking arbitrage for {len(coins)} coins...")
-
+            print("Checking arbitrage opportunities...")
             tasks = [
-                check_arbitrage(session, bot, coin)
-                for coin in coins
+                check_arbitrage(session, bot, coin_id, symbol, rank)
+                for coin_id, symbol, rank in coins
             ]
             await asyncio.gather(*tasks)
-
-            print("Sleeping for 60 seconds...\n")
+            print("Waiting 60 seconds...\n")
             await asyncio.sleep(60)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
